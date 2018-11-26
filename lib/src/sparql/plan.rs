@@ -2,11 +2,14 @@ use crate::model::vocab::xsd;
 use crate::model::Literal;
 use crate::sparql::algebra::*;
 use crate::store::encoded::EncodedQuadsStore;
+use crate::store::numeric_encoder::EncodedQuad;
 use crate::store::numeric_encoder::EncodedTerm;
+use crate::store::numeric_encoder::Encoder;
 use crate::store::numeric_encoder::ENCODED_DEFAULT_GRAPH;
 use crate::Result;
 use failure::format_err;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 pub type EncodedTuple = Vec<Option<EncodedTerm>>;
 
@@ -342,6 +345,104 @@ pub enum TripleTemplateValue {
     Constant(EncodedTerm),
     BlankNode(usize),
     Variable(usize),
+}
+
+pub struct DatasetView<S: EncodedQuadsStore> {
+    store: Arc<S>,
+    default_graphs: Vec<EncodedTerm>,
+    named_graphs: Vec<EncodedTerm>,
+}
+
+impl<S: EncodedQuadsStore> Clone for DatasetView<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            default_graphs: self.default_graphs.clone(),
+            named_graphs: self.named_graphs.clone(),
+        }
+    }
+}
+
+impl<S: EncodedQuadsStore> DatasetView<S> {
+    pub fn build(store: Arc<S>, spec: &DatasetSpec) -> Result<Self> {
+        let default_graphs: Result<Vec<_>> = spec
+            .default
+            .iter()
+            .map(|name| store.encoder().encode_named_node(name))
+            .collect();
+        let named_graphs: Result<Vec<_>> = spec
+            .named
+            .iter()
+            .map(|name| store.encoder().encode_named_node(name))
+            .collect();
+        Ok(Self {
+            store,
+            default_graphs: default_graphs?,
+            named_graphs: named_graphs?,
+        })
+    }
+
+    pub fn quads_for_pattern(
+        &self,
+        subject: Option<EncodedTerm>,
+        predicate: Option<EncodedTerm>,
+        object: Option<EncodedTerm>,
+        graph_name: Option<EncodedTerm>,
+    ) -> Box<dyn Iterator<Item = Result<EncodedQuad>>> {
+        if self.default_graphs.is_empty() {
+            self.store
+                .quads_for_pattern(subject, predicate, object, graph_name)
+        } else {
+            match graph_name {
+                Some(EncodedTerm::DefaultGraph {}) => {
+                    let default_graphs = self.default_graphs.clone();
+                    let store = self.store.clone();
+                    Box::new(default_graphs.into_iter().flat_map(move |graph_name| {
+                        store.quads_for_pattern(subject, predicate, object, Some(graph_name))
+                    }))
+                }
+                Some(_) => self
+                    .store
+                    .quads_for_pattern(subject, predicate, object, graph_name),
+                None => {
+                    let default_graphs = self.default_graphs.clone();
+                    Box::new(
+                        self.store
+                            .quads_for_pattern(subject, predicate, object, graph_name)
+                            .flat_map(move |quad| match quad {
+                                Ok(quad) => {
+                                    if quad.graph_name == ENCODED_DEFAULT_GRAPH {
+                                        None
+                                    } else if default_graphs.contains(&quad.graph_name) {
+                                        Some(Ok(EncodedQuad::new(
+                                            quad.subject,
+                                            quad.predicate,
+                                            quad.object,
+                                            ENCODED_DEFAULT_GRAPH,
+                                        )))
+                                    } else {
+                                        Some(Ok(quad))
+                                    }
+                                }
+                                Err(error) => Some(Err(error)),
+                            }),
+                    )
+                }
+            }
+        }
+    }
+
+    pub fn insert_str(&self, value: &str) -> Result<u64> {
+        self.store.insert_str(value)
+    }
+
+    pub fn get_str(&self, id: u64) -> Result<String> {
+        self.store.get_str(id)
+    }
+
+    pub fn encoder(&self) -> Encoder<&S> {
+        self.store.encoder()
+    }
 }
 
 pub struct PlanBuilder<'a, S: EncodedQuadsStore> {

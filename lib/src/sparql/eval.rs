@@ -30,23 +30,23 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 type EncodedTuplesIterator<'a> = Box<dyn Iterator<Item = Result<EncodedTuple>> + 'a>;
 
 pub struct SimpleEvaluator<S: EncodedQuadsStore> {
-    store: Arc<S>,
+    dataset: DatasetView<S>,
     bnodes_map: Arc<Mutex<BTreeMap<u64, BlankNode>>>,
 }
 
 impl<S: EncodedQuadsStore> Clone for SimpleEvaluator<S> {
     fn clone(&self) -> Self {
         Self {
-            store: self.store.clone(),
+            dataset: self.dataset.clone(),
             bnodes_map: self.bnodes_map.clone(),
         }
     }
 }
 
 impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
-    pub fn new(store: Arc<S>) -> Self {
+    pub fn new(dataset: DatasetView<S>) -> Self {
         Self {
-            store,
+            dataset,
             bnodes_map: Arc::new(Mutex::new(BTreeMap::default())),
         }
     }
@@ -76,7 +76,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
         construct: &'a [TripleTemplate],
     ) -> Result<QueryResult<'a>> {
         Ok(QueryResult::Graph(Box::new(ConstructIterator {
-            store: self.store.clone(),
+            dataset: self.dataset.clone(),
             iter: self.eval_plan(plan, vec![]),
             template: construct,
             buffered_results: Vec::default(),
@@ -86,7 +86,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
 
     pub fn evaluate_describe_plan<'a>(&'a self, plan: &'a PlanNode) -> Result<QueryResult<'a>> {
         Ok(QueryResult::Graph(Box::new(DescribeIterator {
-            store: self.store.clone(),
+            dataset: self.dataset.clone(),
             iter: self.eval_plan(plan, vec![]),
             quads_iters: Vec::default(),
         })))
@@ -108,7 +108,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                     self.eval_plan(&*child, from)
                         .flat_map(move |tuple| match tuple {
                             Ok(tuple) => {
-                                let mut iter = eval.store.quads_for_pattern(
+                                let mut iter = eval.dataset.quads_for_pattern(
                                     get_pattern_value(&subject, &tuple),
                                     get_pattern_value(&predicate, &tuple),
                                     get_pattern_value(&object, &tuple),
@@ -486,13 +486,13 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
             },
             PlanExpression::UUID() => Some(EncodedTerm::NamedNode {
                 iri_id: self
-                    .store
+                    .dataset
                     .insert_str(&Uuid::new_v4().to_urn().to_string())
                     .ok()?,
             }),
             PlanExpression::StrUUID() => Some(EncodedTerm::SimpleLiteral {
                 value_id: self
-                    .store
+                    .dataset
                     .insert_str(&Uuid::new_v4().to_simple().to_string())
                     .ok()?,
             }),
@@ -591,7 +591,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 EncodedTerm::BooleanLiteral(value) => Some(value.into()),
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => {
-                    match &*self.store.get_str(value_id).ok()? {
+                    match &*self.dataset.get_str(value_id).ok()? {
                         "true" | "1" => Some(true.into()),
                         "false" | "0" => Some(false.into()),
                         _ => None,
@@ -609,7 +609,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 }
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => Some(EncodedTerm::DoubleLiteral(
-                    OrderedFloat(self.store.get_str(value_id).ok()?.parse().ok()?),
+                    OrderedFloat(self.dataset.get_str(value_id).ok()?.parse().ok()?),
                 )),
                 _ => None,
             },
@@ -623,7 +623,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 }
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => Some(EncodedTerm::FloatLiteral(
-                    OrderedFloat(self.store.get_str(value_id).ok()?.parse().ok()?),
+                    OrderedFloat(self.dataset.get_str(value_id).ok()?.parse().ok()?),
                 )),
                 _ => None,
             },
@@ -635,7 +635,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 EncodedTerm::BooleanLiteral(value) => Some(if value { 1 } else { 0 }.into()),
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => Some(EncodedTerm::IntegerLiteral(
-                    self.store.get_str(value_id).ok()?.parse().ok()?,
+                    self.dataset.get_str(value_id).ok()?.parse().ok()?,
                 )),
                 _ => None,
             },
@@ -654,7 +654,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 ),
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => Some(EncodedTerm::DecimalLiteral(
-                    self.store.get_str(value_id).ok()?.parse().ok()?,
+                    self.dataset.get_str(value_id).ok()?.parse().ok()?,
                 )),
                 _ => None,
             },
@@ -663,7 +663,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
                 EncodedTerm::NaiveDateTime(value) => Some(value.into()),
                 EncodedTerm::SimpleLiteral { value_id }
                 | EncodedTerm::StringLiteral { value_id } => {
-                    let value = self.store.get_str(value_id).ok()?;
+                    let value = self.dataset.get_str(value_id).ok()?;
                     Some(match DateTime::parse_from_rfc3339(&value) {
                         Ok(value) => value.into(),
                         Err(_) => NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S")
@@ -702,21 +702,21 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
             | EncodedTerm::LangStringLiteral { value_id, .. }
             | EncodedTerm::TypedLiteral { value_id, .. } => Some(value_id),
             EncodedTerm::BooleanLiteral(value) => self
-                .store
+                .dataset
                 .insert_str(if value { "true" } else { "false" })
                 .ok(),
-            EncodedTerm::FloatLiteral(value) => self.store.insert_str(&value.to_string()).ok(),
-            EncodedTerm::DoubleLiteral(value) => self.store.insert_str(&value.to_string()).ok(),
-            EncodedTerm::IntegerLiteral(value) => self.store.insert_str(&value.to_string()).ok(),
-            EncodedTerm::DecimalLiteral(value) => self.store.insert_str(&value.to_string()).ok(),
-            EncodedTerm::DateTime(value) => self.store.insert_str(&value.to_string()).ok(),
-            EncodedTerm::NaiveDateTime(value) => self.store.insert_str(&value.to_string()).ok(),
+            EncodedTerm::FloatLiteral(value) => self.dataset.insert_str(&value.to_string()).ok(),
+            EncodedTerm::DoubleLiteral(value) => self.dataset.insert_str(&value.to_string()).ok(),
+            EncodedTerm::IntegerLiteral(value) => self.dataset.insert_str(&value.to_string()).ok(),
+            EncodedTerm::DecimalLiteral(value) => self.dataset.insert_str(&value.to_string()).ok(),
+            EncodedTerm::DateTime(value) => self.dataset.insert_str(&value.to_string()).ok(),
+            EncodedTerm::NaiveDateTime(value) => self.dataset.insert_str(&value.to_string()).ok(),
         }
     }
 
     fn to_simple_string(&self, term: EncodedTerm) -> Option<String> {
         if let EncodedTerm::SimpleLiteral { value_id } = term {
-            self.store.get_str(value_id).ok()
+            self.dataset.get_str(value_id).ok()
         } else {
             None
         }
@@ -734,7 +734,9 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
         match term {
             EncodedTerm::SimpleLiteral { value_id }
             | EncodedTerm::StringLiteral { value_id }
-            | EncodedTerm::LangStringLiteral { value_id, .. } => self.store.get_str(value_id).ok(),
+            | EncodedTerm::LangStringLiteral { value_id, .. } => {
+                self.dataset.get_str(value_id).ok()
+            }
             _ => None,
         }
     }
@@ -806,11 +808,11 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
         iter: EncodedTuplesIterator<'a>,
         variables: Vec<Variable>,
     ) -> BindingsIterator<'a> {
-        let store = self.store.clone();
+        let dataset = self.dataset.clone();
         BindingsIterator::new(
             variables,
             Box::new(iter.map(move |values| {
-                let encoder = store.encoder();
+                let encoder = dataset.encoder();
                 values?
                     .into_iter()
                     .map(|value| {
@@ -909,7 +911,7 @@ impl<S: EncodedQuadsStore> SimpleEvaluator<S> {
     }
 
     fn compare_str_ids(&self, a: u64, b: u64) -> Option<Ordering> {
-        if let (Ok(a), Ok(b)) = (self.store.get_str(a), self.store.get_str(b)) {
+        if let (Ok(a), Ok(b)) = (self.dataset.get_str(a), self.dataset.get_str(b)) {
             Some(a.cmp(&b))
         } else {
             None
@@ -1164,7 +1166,7 @@ impl<'a> Iterator for HashDeduplicateIterator<'a> {
 }
 
 struct ConstructIterator<'a, S: EncodedQuadsStore> {
-    store: Arc<S>,
+    dataset: DatasetView<S>,
     iter: EncodedTuplesIterator<'a>,
     template: &'a [TripleTemplate],
     buffered_results: Vec<Result<Triple>>,
@@ -1183,7 +1185,7 @@ impl<'a, S: EncodedQuadsStore> Iterator for ConstructIterator<'a, S> {
                 Ok(tuple) => tuple,
                 Err(error) => return Some(Err(error)),
             };
-            let encoder = self.store.encoder();
+            let encoder = self.dataset.encoder();
             for template in self.template {
                 if let (Some(subject), Some(predicate), Some(object)) = (
                     get_triple_template_value(&template.subject, &tuple, &mut self.bnodes),
@@ -1235,9 +1237,9 @@ fn decode_triple<S: StringStore>(
 }
 
 struct DescribeIterator<'a, S: EncodedQuadsStore> {
-    store: Arc<S>,
+    dataset: DatasetView<S>,
     iter: EncodedTuplesIterator<'a>,
-    quads_iters: Vec<S::QuadsForSubjectIterator>,
+    quads_iters: Vec<Box<dyn Iterator<Item = Result<EncodedQuad>>>>,
 }
 
 impl<'a, S: EncodedQuadsStore> Iterator for DescribeIterator<'a, S> {
@@ -1247,28 +1249,23 @@ impl<'a, S: EncodedQuadsStore> Iterator for DescribeIterator<'a, S> {
         while let Some(mut quads_iter) = self.quads_iters.pop() {
             if let Some(quad) = quads_iter.next() {
                 self.quads_iters.push(quads_iter);
-                return Some(quad.and_then(|quad| self.store.encoder().decode_triple(&quad)));
+                return Some(quad.and_then(|quad| self.dataset.encoder().decode_triple(&quad)));
             }
         }
         let tuple = match self.iter.next()? {
             Ok(tuple) => tuple,
             Err(error) => return Some(Err(error)),
         };
-        let mut error_to_return = None;
         for subject in tuple {
             if let Some(subject) = subject {
-                match self.store.quads_for_subject(subject) {
-                    Ok(quads_iter) => self.quads_iters.push(quads_iter),
-                    Err(error) => {
-                        error_to_return = Some(error);
-                    }
-                }
+                self.quads_iters.push(self.dataset.quads_for_pattern(
+                    Some(subject),
+                    None,
+                    None,
+                    None,
+                ))
             }
         }
-        if let Some(error) = error_to_return {
-            Some(Err(error))
-        } else {
-            self.next()
-        }
+        self.next()
     }
 }

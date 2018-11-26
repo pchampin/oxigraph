@@ -29,6 +29,7 @@ use crate::sparql::algebra::QueryResult;
 use crate::sparql::algebra::Variable;
 use crate::sparql::eval::SimpleEvaluator;
 use crate::sparql::parser::read_sparql_query;
+use crate::sparql::plan::DatasetView;
 use crate::sparql::plan::PlanBuilder;
 use crate::sparql::plan::PlanNode;
 use crate::sparql::plan::TripleTemplate;
@@ -66,51 +67,42 @@ impl<S: EncodedQuadsStore> SparqlDataset for StoreDataset<S> {
 
     fn prepare_query(&self, query: impl Read) -> Result<SimplePreparedQuery<S>> {
         Ok(SimplePreparedQuery(match read_sparql_query(query, None)? {
-            Query::Select {
-                algebra,
-                dataset: _,
-            } => {
+            Query::Select { algebra, dataset } => {
                 let store = self.encoded();
                 let (plan, variables) = PlanBuilder::build(&*store, &algebra)?;
                 SimplePreparedQueryOptions::Select {
                     plan,
                     variables,
-                    evaluator: SimpleEvaluator::new(store),
+                    evaluator: SimpleEvaluator::new(DatasetView::build(store, &dataset)?),
                 }
             }
-            Query::Ask {
-                algebra,
-                dataset: _,
-            } => {
+            Query::Ask { algebra, dataset } => {
                 let store = self.encoded();
                 let (plan, _) = PlanBuilder::build(&*store, &algebra)?;
                 SimplePreparedQueryOptions::Ask {
                     plan,
-                    evaluator: SimpleEvaluator::new(store),
+                    evaluator: SimpleEvaluator::new(DatasetView::build(store, &dataset)?),
                 }
             }
             Query::Construct {
                 construct,
                 algebra,
-                dataset: _,
+                dataset,
             } => {
                 let store = self.encoded();
                 let (plan, variables) = PlanBuilder::build(&*store, &algebra)?;
                 SimplePreparedQueryOptions::Construct {
                     plan,
                     construct: PlanBuilder::build_graph_template(&*store, &construct, variables)?,
-                    evaluator: SimpleEvaluator::new(store),
+                    evaluator: SimpleEvaluator::new(DatasetView::build(store, &dataset)?),
                 }
             }
-            Query::Describe {
-                algebra,
-                dataset: _,
-            } => {
+            Query::Describe { algebra, dataset } => {
                 let store = self.encoded();
                 let (plan, _) = PlanBuilder::build(&*store, &algebra)?;
                 SimplePreparedQueryOptions::Describe {
                     plan,
-                    evaluator: SimpleEvaluator::new(store),
+                    evaluator: SimpleEvaluator::new(DatasetView::build(store, &dataset)?),
                 }
             }
         }))
