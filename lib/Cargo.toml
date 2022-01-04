@@ -37,7 +37,7 @@ rio_turtle = "0.5"
 rio_xml = "0.5"
 hex = "0.4"
 nom = "5"
-peg = "0.6"
+peg = "0.8"
 siphasher = "0.3"
 lasso = {version="0.3", features=["multi-threaded"]}
 sophia_api = { version = "0.6.2", optional = true }
